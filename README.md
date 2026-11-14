@@ -43,4 +43,4 @@ npm run dev
 - `src/screens/` one file per screen
 - `android/` the Capacitor Android project
 
-The APK is a **debug** build, signed with the standard debug key. That is fine for your own use and for sharing with friends. Publishing on the Play Store needs a release keystore.
+The APK is a **debug** build, signed with the fixed key in `android/keystore/` so new versions install over old ones. That is fine for your own use and for sharing with friends. Publishing on the Play Store needs a release keystore.

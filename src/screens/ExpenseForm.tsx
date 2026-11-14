@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ChevronDown, Plus } from 'lucide-react';
 import { Avatar, CheckBox, Empty, Sheet, TopBar, usePeople, toast } from '../components/ui';
@@ -110,6 +110,16 @@ export default function ExpenseForm() {
   const payersOk = totalOk && paidSum === total && payerList.length > 0;
 
   const needsOthers = !group && withIds.length === 0;
+  const fmt = (m: number) => formatMoney(Math.abs(m), currency);
+  let splitProblem: string | null = null;
+  if (totalOk && result && !result.ok) {
+    if (split.type === 'exact' && result.remaining !== undefined && result.error?.startsWith('Amounts must')) {
+      const assigned = total - result.remaining;
+      splitProblem = `Split adds up to ${fmt(assigned)}, which is ${fmt(result.remaining)} ${result.remaining > 0 ? 'less' : 'more'} than the bill of ${fmt(total)}. Tap the split to fix it.`;
+    } else if (split.type === 'percent' && result.remaining !== undefined) {
+      splitProblem = `Percentages add up to ${+(100 - result.remaining).toFixed(2)}%, not 100%. Tap the split to fix it.`;
+    } else splitProblem = result.error ?? 'Check the split';
+  }
   const problem = !desc.trim()
     ? 'Add a description'
     : !totalOk
@@ -117,10 +127,12 @@ export default function ExpenseForm() {
       : needsOthers
         ? 'Choose who you split with'
         : !payersOk
-          ? 'Paid amounts must add up to the total'
-          : result && !result.ok
-            ? result.error ?? 'Check the split'
-            : null;
+          ? `Paid amounts add up to ${fmt(paidSum)}, which is ${fmt(total - paidSum)} ${paidSum < total ? 'less' : 'more'} than the bill of ${fmt(total)}. Tap "Paid by" to fix it.`
+          : splitProblem;
+  const shareSum = split.type === 'shares' ? participants.reduce((a, p) => a + (values[p] || 0), 0) : 0;
+  const shareSumMinor = parseMoney(String(shareSum), currency);
+  const sharesLookLikeMoney =
+    split.type === 'shares' && totalOk && Math.max(0, ...participants.map((p) => values[p] || 0)) >= 10 && shareSumMinor !== total;
 
   const save = () => {
     if (problem || !result) return;
@@ -204,6 +216,12 @@ export default function ExpenseForm() {
         )}
       </div>
 
+      {problem && totalOk && desc.trim() && <div className="alert">{problem}</div>}
+      {!problem && sharesLookLikeMoney && (
+        <div className="alert warn">
+          Your shares add up to {shareSum}, but the bill is {fmt(total)}. Shares are ratios, so everyone's part is scaled. If you typed rupee amounts, open the split and tap "Use as exact amounts".
+        </div>
+      )}
       <div className="field">
         <label htmlFor="dt">Date</label>
         <input id="dt" className="input" type="date" value={date} max="2100-12-31" onChange={(e) => setDate(e.target.value || todayISO())} />
@@ -213,7 +231,6 @@ export default function ExpenseForm() {
         <textarea id="nt" className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Add any details" />
       </div>
 
-      {problem && (desc || amountText) && <div className="err">{problem}</div>}
       <div className="actions" style={{ marginTop: 20 }}>
         <button className="btn block" disabled={!!problem} onClick={save}>{existing ? 'Save changes' : 'Add expense'}</button>
       </div>
@@ -270,6 +287,7 @@ export default function ExpenseForm() {
           pool={pool} name={name} currency={currency} total={totalOk ? total : 0}
           payerId={payerId} multi={multi} vals={payerVals}
           onDone={(m, pid, vals) => { setMulti(m); setPayerId(pid); setPayerVals(vals); setSheet(null); }}
+          onSetTotal={(m) => setAmountText(toInput(m, currency))}
           onClose={() => setSheet(null)}
         />
       )}
@@ -282,6 +300,7 @@ export default function ExpenseForm() {
             pool={pool} name={name} currency={currency} total={totalOk ? total : 0}
             state={{ ...split, included: includedEqual }}
             onDone={(s) => { setSplit(s); setSheet(null); }}
+            onSetTotal={(m) => setAmountText(toInput(m, currency))}
             onClose={() => setSheet(null)}
           />
         )
@@ -291,10 +310,11 @@ export default function ExpenseForm() {
 }
 
 /* ================= payer sheet ================= */
-function PayerSheet({ pool, name, currency, total, payerId, multi, vals, onDone, onClose }: {
+function PayerSheet({ pool, name, currency, total, payerId, multi, vals, onDone, onClose, onSetTotal }: {
   pool: ID[]; name: (id: ID) => string; currency: string; total: number;
   payerId: ID; multi: boolean; vals: Record<ID, string>;
   onDone: (multi: boolean, payerId: ID, vals: Record<ID, string>) => void; onClose: () => void;
+  onSetTotal: (minor: number) => void;
 }) {
   const [m, setM] = useState(multi);
   const [pid, setPid] = useState(payerId);
@@ -304,6 +324,7 @@ function PayerSheet({ pool, name, currency, total, payerId, multi, vals, onDone,
   const left = total - sum;
   const { byId } = usePeople();
   const nm = (p: ID) => byId.get(p)?.name ?? '?';
+  const fmt = (x: number) => formatMoney(Math.abs(x), currency);
   return (
     <Sheet title="Who paid?" onClose={onClose}>
       <div className="seg" style={{ marginBottom: 12 }}>
@@ -324,7 +345,18 @@ function PayerSheet({ pool, name, currency, total, payerId, multi, vals, onDone,
           ),
         )}
       </div>
-      {m && <div className={left === 0 ? 'hint' : 'err'}>{formatMoney(sum, currency)} of {formatMoney(total, currency)} · {left === 0 ? 'all accounted for' : `${formatMoney(Math.abs(left), currency)} ${left > 0 ? 'left' : 'over'}`}</div>}
+      {m && (
+        left === 0 ? (
+          <div className="ok-line">✓ {fmt(sum)} paid · matches the bill</div>
+        ) : (
+          <div className="alert">
+            {total === 0
+              ? `Paid amounts add up to ${fmt(sum)}. Enter the bill amount, or use this total.`
+              : `Paid ${fmt(sum)} of ${fmt(total)} · ${fmt(left)} ${left > 0 ? 'still to add' : 'more than the bill'}`}
+            {sum > 0 && <div><button className="btn sm ghost" style={{ marginTop: 8 }} onClick={() => onSetTotal(sum)}>Set bill to {fmt(sum)}</button></div>}
+          </div>
+        )
+      )}
       <div className="actions" style={{ marginTop: 14 }}>
         <button className="btn block" disabled={m && left !== 0} onClick={() => onDone(m, pid, v)}>Done</button>
       </div>
@@ -334,24 +366,25 @@ function PayerSheet({ pool, name, currency, total, payerId, multi, vals, onDone,
 
 /* ================= split sheet ================= */
 const TABS: { id: SplitType; label: string }[] = [
-  { id: 'equal', label: '=' },
-  { id: 'exact', label: '1.23' },
+  { id: 'equal', label: 'Equal' },
+  { id: 'exact', label: 'Amount' },
   { id: 'percent', label: '%' },
   { id: 'shares', label: 'Shares' },
-  { id: 'adjust', label: '±' },
+  { id: 'adjust', label: '+/−' },
 ];
 const TAB_HELP: Record<SplitType, string> = {
-  equal: 'Select who shares this expense. It is divided equally.',
-  exact: 'Enter exactly how much each person owes.',
-  percent: 'Enter the percentage each person owes.',
-  shares: 'Give each person a number of shares (e.g. 2 adults, 1 child).',
-  adjust: 'Enter extra (+) or less (−) for each person. The rest is split equally.',
+  equal: 'Tick who shares this bill. It is divided equally.',
+  exact: 'Type the rupee amount each person owes. They must add up to the bill.',
+  percent: 'Type the percentage each person owes. They must add up to 100%.',
+  shares: 'Ratios, not rupees: e.g. 2 for a couple, 1 for a single person.',
+  adjust: 'Add extra (+) or less (−) for some people. The rest is split equally.',
 };
 
-function SplitSheet({ pool, name, currency, total, state, onDone, onClose }: {
+function SplitSheet({ pool, name, currency, total, state, onDone, onClose, onSetTotal }: {
   pool: ID[]; name: (id: ID) => string; currency: string; total: number;
   state: { type: SplitType; included: ID[]; vals: Record<ID, string> };
   onDone: (s: { type: SplitType; included: ID[]; vals: Record<ID, string> }) => void; onClose: () => void;
+  onSetTotal: (minor: number) => void;
 }) {
   const { byId } = usePeople();
   const [type, setType] = useState<SplitType>(state.type);
@@ -371,13 +404,55 @@ function SplitSheet({ pool, name, currency, total, state, onDone, onClose }: {
   const res = computeSplit({ type, total, participants, values: numeric });
   const amountOf = (p: ID) => res.owed.find((o) => o.personId === p)?.amount;
   const nm = (p: ID) => byId.get(p)?.name ?? '?';
+  const fmt = (x: number) => formatMoney(Math.abs(x), currency);
 
-  let footer: string;
-  if (type === 'exact') footer = `${formatMoney(total - (res.remaining ?? 0), currency)} of ${formatMoney(total, currency)} · ${res.remaining === 0 ? 'all assigned' : `${formatMoney(Math.abs(res.remaining ?? 0), currency)} ${(res.remaining ?? 0) > 0 ? 'left' : 'over'}`}`;
-  else if (type === 'percent') footer = `${(100 - (res.remaining ?? 100)).toFixed(2).replace(/\.?0+$/, '')}% of 100% · ${Math.abs(res.remaining ?? 0) < 0.001 ? 'all assigned' : `${Math.abs(res.remaining ?? 0)}% ${(res.remaining ?? 0) > 0 ? 'left' : 'over'}`}`;
-  else if (type === 'shares') footer = `${participants.reduce((s, p) => s + (numeric[p] || 0), 0)} total shares`;
-  else if (type === 'equal') footer = included.length ? `${formatMoney(Math.floor(total / included.length), currency)} per person` : 'Pick at least one person';
-  else footer = res.ok ? 'The remainder is split equally' : res.error ?? '';
+  const assigned = type === 'exact' ? participants.reduce((a, p) => a + (numeric[p] || 0), 0) : 0;
+  const shareSum = type === 'shares' ? participants.reduce((a, p) => a + (numeric[p] || 0), 0) : 0;
+  const shareSumMinor = parseMoney(String(shareSum), currency);
+  const sharesLookLikeMoney = type === 'shares' && total > 0 && Math.max(0, ...participants.map((p) => numeric[p] || 0)) >= 10 && shareSumMinor !== total;
+
+  const useAsAmounts = () => {
+    setByType({ ...byType, exact: { ...vals } });
+    setType('exact');
+  };
+
+  let status: ReactNode;
+  if (type === 'equal') {
+    status = included.length
+      ? <div className="ok-line">{total > 0 ? `${fmt(Math.floor(total / included.length))} each · ` : ''}{included.length} {included.length === 1 ? 'person' : 'people'}</div>
+      : <div className="alert">Pick at least one person</div>;
+  } else if (type === 'exact') {
+    const rem = total - assigned;
+    status = total > 0 && rem === 0 ? (
+      <div className="ok-line">✓ {fmt(assigned)} assigned · matches the bill</div>
+    ) : (
+      <div className="alert">
+        {total === 0
+          ? `These add up to ${fmt(assigned)}. Enter the bill amount, or use this total.`
+          : `${fmt(assigned)} of ${fmt(total)} assigned · ${fmt(rem)} ${rem > 0 ? 'still to assign' : 'more than the bill'}`}
+        {assigned > 0 && <div><button className="btn sm ghost" style={{ marginTop: 8 }} onClick={() => onSetTotal(assigned)}>Set bill to {fmt(assigned)}</button></div>}
+      </div>
+    );
+  } else if (type === 'percent') {
+    const rem = res.remaining ?? 100;
+    status = Math.abs(rem) < 0.001
+      ? <div className="ok-line">✓ 100% assigned</div>
+      : <div className="alert">{+(100 - rem).toFixed(2)}% of 100% · {Math.abs(+rem.toFixed(2))}% {rem > 0 ? 'still to assign' : 'too much'}</div>;
+  } else if (type === 'shares') {
+    status = sharesLookLikeMoney ? (
+      <div className="alert warn">
+        These look like rupee amounts. They add up to {shareSum}, but the bill is {fmt(total)}. Shares are ratios, so each person's part is scaled to the amount under their name.
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+          <button className="btn sm ghost" onClick={useAsAmounts}>Use as exact amounts</button>
+          {shareSumMinor > 0 && <button className="btn sm ghost" onClick={() => onSetTotal(shareSumMinor)}>Set bill to {fmt(shareSumMinor)}</button>}
+        </div>
+      </div>
+    ) : res.ok ? (
+      <div className="ok-line">{shareSum} {shareSum === 1 ? 'share' : 'shares'} in total</div>
+    ) : <div className="alert">{res.error}</div>;
+  } else {
+    status = res.ok ? <div className="ok-line">✓ The rest is split equally</div> : <div className="alert">{res.error}</div>;
+  }
 
   return (
     <Sheet title="Split options" onClose={onClose}>
@@ -403,7 +478,7 @@ function SplitSheet({ pool, name, currency, total, state, onDone, onClose }: {
               <Avatar id={p} name={nm(p)} />
               <div className="grow">
                 <div className="title">{name(p)}</div>
-                {(type === 'shares' || type === 'percent' || type === 'adjust') && total > 0 && amt !== undefined && <div className="sub">{formatMoney(amt, currency)}</div>}
+                {(type === 'shares' || type === 'percent' || type === 'adjust') && total > 0 && amt !== undefined && <div className="sub">owes {formatMoney(amt, currency)}</div>}
               </div>
               <input className="mini-input" inputMode="decimal"
                 placeholder={type === 'percent' ? '0 %' : type === 'shares' ? '1' : '0.00'}
@@ -413,9 +488,11 @@ function SplitSheet({ pool, name, currency, total, state, onDone, onClose }: {
           );
         })}
       </div>
-      <div className={res.ok ? 'hint' : 'err'}>{footer}</div>
+      {status}
       <div className="actions" style={{ marginTop: 14 }}>
-        <button className="btn block" disabled={total > 0 ? !res.ok : participants.length === 0} onClick={() => onDone({ type, included, vals })}>Done</button>
+        <button className="btn block" disabled={total > 0 ? !res.ok : participants.length === 0} onClick={() => onDone({ type, included, vals })}>
+          {sharesLookLikeMoney ? 'Keep as shares (scaled)' : 'Done'}
+        </button>
       </div>
     </Sheet>
   );

@@ -82,8 +82,9 @@ export function groupSummaryText(group: Group, expenses: Expense[], people: Pers
   const lines = [`*${group.name}*`, `Total spent: ${formatMoney(total, group.currency)}`, ''];
   if (transfers.length === 0) lines.push('✅ Everyone is settled up!');
   else {
-    lines.push('Who owes whom:');
-    for (const t of transfers) lines.push(`• ${nm(t.from)} ${t.from === meId ? 'owe' : 'owes'} ${nm(t.to)} ${formatMoney(t.amount, group.currency)}`);
+    lines.push(`To settle up (${transfers.length} ${transfers.length === 1 ? 'payment' : 'payments'}):`);
+    const order = [...transfers].sort((a, b) => nm(a.from).localeCompare(nm(b.from)) || b.amount - a.amount);
+    for (const t of order) lines.push(`• ${nm(t.from)} → ${nm(t.to)}: ${formatMoney(t.amount, group.currency)}`);
   }
   lines.push('', 'Sent from Hisab');
   return lines.join('\n');

@@ -68,7 +68,7 @@ export default function SettingsScreen() {
       <div className="actions" style={{ marginTop: 24 }}>
         <button className="btn danger" onClick={() => setConfirmReset(true)}><Trash2 size={18} /> Delete all data</button>
       </div>
-      <p className="hint" style={{ textAlign: 'center', marginTop: 24 }}>Hisab v0.1 · all data stays on this device</p>
+      <p className="hint" style={{ textAlign: 'center', marginTop: 24 }}>Hisab v0.2 · all data stays on this device</p>
 
       {confirmReset && (
         <ConfirmSheet title="Delete everything?" message="All groups, people and expenses on this phone will be erased. Back up first if you may need them." confirmLabel="Delete all" onClose={() => setConfirmReset(false)}

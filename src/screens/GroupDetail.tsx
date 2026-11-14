@@ -25,6 +25,9 @@ export default function GroupDetail() {
   const nets = netBalances(expenses);
   const myNet = nets.get(meId!) ?? 0;
   const transfers = groupTransfers(expenses, group.simplify);
+  const payerMap = new Map<string, typeof transfers>();
+  for (const t of transfers) payerMap.set(t.from, [...(payerMap.get(t.from) ?? []), t]);
+  const byPayer = [...payerMap].sort((a, b) => (a[0] === meId ? -1 : b[0] === meId ? 1 : name(a[0]).localeCompare(name(b[0]))));
   const spent = expenses.filter((e) => e.kind === 'expense');
   const total = spent.reduce((s, e) => s + e.amount, 0);
   const myPaid = spent.reduce((s, e) => s + (e.payers.find((p) => p.personId === meId)?.amount ?? 0), 0);
@@ -95,24 +98,35 @@ export default function GroupDetail() {
         )
       ) : (
         <>
-          <div className="section-title">{group.simplify ? 'Simplified debts' : 'Who owes whom'}</div>
+          <div className="section-title">
+            {group.simplify ? `Settle-up plan${transfers.length ? ` · ${transfers.length} ${transfers.length === 1 ? 'payment' : 'payments'}` : ''}` : 'Who owes whom'}
+          </div>
+          {group.simplify && transfers.length > 0 && (
+            <div className="hint" style={{ margin: '-2px 20px 10px' }}>Fewest payments to clear everyone. As people pay, the other lines stay the same.</div>
+          )}
           {transfers.length === 0 ? (
             <div className="card"><div className="row"><div className="tile">✅</div><div className="grow title">Everyone is settled up</div></div></div>
           ) : (
-            <div className="card">
-              {transfers.map((t) => (
-                <div className="row" key={`${t.from}-${t.to}`}>
-                  <Avatar id={t.from} name={data.people.find((p) => p.id === t.from)?.name ?? '?'} size="sm" />
-                  <div className="grow" style={{ whiteSpace: 'normal' }}>
-                    <b>{name(t.from)}</b> {t.from === meId ? 'owe' : 'owes'} <b>{name(t.to)}</b>
-                    <div className={t.from === meId ? 'neg' : t.to === meId ? 'pos' : 'muted'} style={{ fontWeight: 700 }}>
-                      {formatMoney(t.amount, group.currency)}
-                    </div>
-                  </div>
-                  <button className="btn soft sm" onClick={() => settle(t.from, t.to, t.amount)}>Settle</button>
+            byPayer.map(([payer, list]) => (
+              <div className="card" key={payer}>
+                <div className="row" style={{ minHeight: 52 }}>
+                  <Avatar id={payer} name={data.people.find((p) => p.id === payer)?.name ?? '?'} size="sm" />
+                  <div className="grow title">{name(payer)} {payer === meId ? 'pay' : 'pays'}</div>
+                  <b className={payer === meId ? 'neg' : ''}>{formatMoney(list.reduce((s, t) => s + t.amount, 0), group.currency)}</b>
                 </div>
-              ))}
-            </div>
+                {list.map((t) => (
+                  <div className="row" key={t.to} style={{ paddingLeft: 28 }}>
+                    <span className="muted" style={{ fontSize: 18 }}>→</span>
+                    <Avatar id={t.to} name={data.people.find((p) => p.id === t.to)?.name ?? '?'} size="sm" />
+                    <div className="grow">
+                      <div className="title">{name(t.to)}</div>
+                      <div className={t.from === meId ? 'neg' : t.to === meId ? 'pos' : 'muted'} style={{ fontWeight: 700 }}>{formatMoney(t.amount, group.currency)}</div>
+                    </div>
+                    <button className="btn soft sm" onClick={() => settle(t.from, t.to, t.amount)}>Settle</button>
+                  </div>
+                ))}
+              </div>
+            ))
           )}
 
           <div className="section-title">Each person's balance</div>

@@ -65,9 +65,105 @@ export function pairwiseTransfers(expenses: Expense[]): Transfer[] {
   return out.sort((x, y) => y.amount - x.amount);
 }
 
+const MAX_EXACT = 20;
+
+/**
+ * Fewest possible transfers that settle `net`.
+ * Splits people into the largest number of groups whose balances cancel out exactly
+ * (a group of k people needs k-1 payments), then settles each group largest-first.
+ * Falls back to the greedy method for very large groups.
+ */
+export function minTransfers(net: Map<ID, number>): Transfer[] {
+  const entries = [...net.entries()].filter(([, v]) => v !== 0).sort((a, b) => a[0].localeCompare(b[0]));
+  const n = entries.length;
+  if (n === 0) return [];
+  if (n > MAX_EXACT) return settleNets(new Map(entries));
+  const vals = entries.map((e) => e[1]);
+  const size = 1 << n;
+  const sum = new Float64Array(size);
+  const dp = new Int8Array(size);
+  for (let m = 1; m < size; m++) {
+    const low = m & -m;
+    sum[m] = sum[m ^ low] + vals[31 - Math.clz32(low)];
+    let best = 0;
+    for (let k = 0; k < n; k++) if (m & (1 << k) && dp[m ^ (1 << k)] > best) best = dp[m ^ (1 << k)];
+    dp[m] = best + (sum[m] === 0 ? 1 : 0);
+  }
+  // walk back to recover the zero-sum groups
+  const groups: number[][] = [];
+  let cur: number[] = [];
+  let m = size - 1;
+  while (m) {
+    const target = dp[m] - (sum[m] === 0 ? 1 : 0);
+    for (let k = 0; k < n; k++) {
+      const bit = 1 << k;
+      if (m & bit && dp[m ^ bit] === target) {
+        cur.push(k);
+        m ^= bit;
+        break;
+      }
+    }
+    if (sum[m] === 0) {
+      groups.push(cur);
+      cur = [];
+    }
+  }
+  const out: Transfer[] = [];
+  for (const g of groups) out.push(...settleNets(new Map(g.map((k) => entries[k]))));
+  return out;
+}
+
+/**
+ * Stable settle-up plan: the plan is worked out from the expenses, and payments are
+ * ticked off against it, so paying one suggested amount never reshuffles the others.
+ * Payments that don't match the plan are settled on top with the fewest extra transfers.
+ */
+export function settlementPlan(expenses: Expense[]): Transfer[] {
+  const ordered = [...expenses].sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt);
+  const edges = new Map<string, number>();
+  for (const t of minTransfers(netBalances(ordered.filter((e) => e.kind === 'expense')))) edges.set(`${t.from}|${t.to}`, t.amount);
+  for (const p of ordered) {
+    if (p.kind !== 'payment' || !p.payers[0] || !p.owed[0]) continue;
+    const key = `${p.payers[0].personId}|${p.owed[0].personId}`;
+    const have = edges.get(key) ?? 0;
+    if (have > 0) edges.set(key, have - Math.min(have, p.amount));
+  }
+  // whatever the remaining plan doesn't explain gets settled separately
+  const residual = netBalances(ordered);
+  for (const [key, amt] of edges) {
+    const [from, to] = key.split('|');
+    residual.set(to, (residual.get(to) ?? 0) - amt);
+    residual.set(from, (residual.get(from) ?? 0) + amt);
+  }
+  const pair = new Map<string, number>();
+  const add = (from: ID, to: ID, amt: number) => {
+    if (!amt || from === to) return;
+    const rev = `${to}|${from}`;
+    const back = pair.get(rev) ?? 0;
+    if (back > 0) {
+      const c = Math.min(back, amt);
+      pair.set(rev, back - c);
+      amt -= c;
+    }
+    if (amt > 0) pair.set(`${from}|${to}`, (pair.get(`${from}|${to}`) ?? 0) + amt);
+  };
+  for (const [key, amt] of edges) {
+    const [from, to] = key.split('|');
+    add(from, to, amt);
+  }
+  for (const t of minTransfers(residual)) add(t.from, t.to, t.amount);
+  return [...pair.entries()]
+    .filter(([, v]) => v > 0)
+    .map(([key, amount]) => {
+      const [from, to] = key.split('|');
+      return { from, to, amount };
+    })
+    .sort((a, b) => b.amount - a.amount);
+}
+
 /** Debts to display for a group, either simplified or pairwise. */
 export function groupTransfers(expenses: Expense[], simplify: boolean): Transfer[] {
-  return simplify ? settleNets(netBalances(expenses)) : pairwiseTransfers(expenses);
+  return simplify ? settlementPlan(expenses) : pairwiseTransfers(expenses);
 }
 
 /**
